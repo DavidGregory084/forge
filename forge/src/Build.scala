@@ -6,7 +6,7 @@ import cats.mtl._
 import cats.Hash
 import cats.data.State
 
- abstract class Store[I, K, V] {
+abstract class Store[I, K, V] {
   def getInfo: I
   def putInfo(i: I): Store[I, K, V]
   def getValue(k: K): V
@@ -96,10 +96,38 @@ object Build {
     }
   }
 
+  def sprsh2: TaskDescription[Monad, String, Int] = new TaskDescription[Monad, String, Int] {
+    def compute(target: String): Option[Task[Monad, String, Int]] = {
+      target match {
+        case "B1" =>
+          Some(new Task[Monad, String, Int] {
+            def run[F[_]: Monad](fetch: String => F[Int]): F[Int] =
+              for {
+                c1 <- fetch("C1")
+                r <- if (c1 === 1) fetch("B2") else fetch("A2")
+              } yield r
+          })
+        case "B2" =>
+          Some(new Task[Monad, String, Int] {
+            def run[F[_]: Monad](fetch: String => F[Int]): F[Int] =
+              for {
+                c1 <- fetch("C1")
+                r <- if (c1 === 1) fetch("A1") else fetch("B1")
+              } yield r
+          })
+        case _ =>
+          None
+      }
+    }
+  }
+
   def main(args: Array[String]): Unit = {
     val store = Store.init[Unit, String, Int]((), k => if (k === "A1") 10 else 20)
-    val result = busy[String, Int].build(sprsh1, "B2", store)
-    println("B1: " + result.getValue("B1"))
-    println("B2: " + result.getValue("B2"))
+    val result1 = busy[String, Int].build(sprsh1, "B2", store)
+    println("B1: " + result1.getValue("B1"))
+    println("B2: " + result1.getValue("B2"))
+    // val result2 = busy[String, Int].build(sprsh2, "B2", store)
+    // println("B1: " + result2.getValue("B1"))
+    // println("B2: " + result2.getValue("B2"))
   }
 }

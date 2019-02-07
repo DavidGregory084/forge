@@ -21,6 +21,7 @@ object forge extends TpolecatModule {
 
   def ivyDeps = Agg(
     ivy"org.typelevel::cats-mtl-core:0.4.0",
+    ivy"io.verizon.quiver::core:7.0.19",
     ivy"io.monix::monix:3.0.0-RC2"
   )
 
