@@ -2,6 +2,7 @@ package forge
 
 import cats._
 import cats.implicits._
+import cats.mtl._
 import cats.Hash
 import cats.data.State
 
@@ -34,28 +35,28 @@ object Store {
 }
 
 object Build {
-  abstract class Task[K, V] {
-    def run[F[_]: Applicative](fetch: K => F[V]): F[V]
+  abstract class Task[C[_[_]], K, V] {
+    def run[F[_]: C](fetch: K => F[V]): F[V]
   }
 
-  abstract class TaskDescription[K, V] {
-    def compute(target: K): Option[Task[K, V]]
+  abstract class TaskDescription[C[_[_]], K, V] {
+    def compute(target: K): Option[Task[C, K, V]]
   }
 
-  abstract class System[I, K, V] {
-    def build(tasks: TaskDescription[K, V], target: K, store: Store[I, K, V]): Store[I, K, V]
+  abstract class System[C[_[_]], I, K, V] {
+    def build(tasks: TaskDescription[C, K, V], target: K, store: Store[I, K, V]): Store[I, K, V]
   }
 
-  abstract class Rebuilder[K, V] {
-    def rebuild(key: K, currentValue: V, recompute: Task[K, V]): Task[K, V]
+  abstract class Rebuilder[C[_[_]], IR, K, V] {
+    def rebuild(key: K, currentValue: V, recompute: Task[C, K, V]): Task[MonadState[?[_], IR], K, V]
   }
 
-  abstract class Scheduler[I, K, V] {
-    def schedule(rebuilder: Rebuilder[K, V]): System[I, K, V]
+  abstract class Scheduler[C[_[_]], I, IR, K, V] {
+    def schedule(rebuilder: Rebuilder[C, IR, K, V]): System[C, I, K, V]
   }
 
-  def busy[K, V] = new System[Unit, K, V] {
-    def build(tasks: TaskDescription[K, V], target: K, store: Store[Unit, K, V]): Store[Unit, K, V] = {
+  def busy[K, V] = new System[Applicative, Unit, K, V] {
+    def build(tasks: TaskDescription[Applicative, K, V], target: K, store: Store[Unit, K, V]): Store[Unit, K, V] = {
       def fetch(k: K): State[Store[Unit, K, V], V] =
         tasks.compute(k) match {
           case None =>
@@ -73,18 +74,18 @@ object Build {
     }
   }
 
-  def sprsh1: TaskDescription[String, Int] = new TaskDescription[String, Int] {
-    def compute(target: String): Option[Task[String, Int]] = {
+  def sprsh1: TaskDescription[Applicative, String, Int] = new TaskDescription[Applicative, String, Int] {
+    def compute(target: String): Option[Task[Applicative, String, Int]] = {
       println(s"Computing $target")
       target match {
         case "B1" =>
-          Some(new Task[String, Int] {
+          Some(new Task[Applicative, String, Int] {
             def run[F[_]: Applicative](fetch: String => F[Int]): F[Int] = {
               (fetch("A1"), fetch("A2")).mapN(_ + _)
             }
           })
         case "B2" =>
-          Some(new Task[String, Int] {
+          Some(new Task[Applicative, String, Int] {
             def run[F[_]: Applicative](fetch: String => F[Int]): F[Int] = {
               fetch("B1").map(_ * 2)
             }

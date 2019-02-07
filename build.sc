@@ -15,7 +15,12 @@ object forge extends TpolecatModule {
     super.scalacOptions() :+ "-Ypartial-unification"
   }
 
+  def scalacPluginIvyDeps = Agg(
+    ivy"org.spire-math::kind-projector:0.9.8"
+  )
+
   def ivyDeps = Agg(
+    ivy"org.typelevel::cats-mtl-core:0.4.0",
     ivy"io.monix::monix:3.0.0-RC2"
   )
 
