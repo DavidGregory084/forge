@@ -1,5 +1,8 @@
 package forge
 
+import cats._
+import cats.implicits._
+import cats.Hash
 import cats.data.State
 
  abstract class Store[I, K, V] {
@@ -10,9 +13,29 @@ import cats.data.State
   def getHash(k: K): Int
 }
 
+private[forge] case class MapStore[I, K, V: Hash](info: I, map: Map[K, V]) extends Store[I, K, V] {
+  def getInfo: I = info
+  def putInfo(i: I) = MapStore(i, map)
+  def getValue(k: K): V = map(k)
+  def putValue(k: K, v: V) = MapStore(info, map.updated(k, v))
+  def getHash(k: K): Int = getValue(k).hash
+}
+
+object Store {
+  def init[I, K: Eq, V: Hash](i: I, f: K => V): Store[I, K, V] = new Store[I, K, V] {
+    def getInfo: I = i
+    def putInfo(i: I): Store[I, K, V] = Store.init(i, f)
+    def getValue(k: K): V = f(k)
+    def putValue(k1: K, v: V) = Store.init[I, K, V](i, k2 => if (k1 === k2) v else f(k1))
+    def getHash(k: K) = getValue(k).hash
+  }
+  def initMap[I, K, V: Hash](i: I): Store[I, K, V] =
+    MapStore(i, Map.empty[K, V])
+}
+
 object Build {
   abstract class Task[K, V] {
-    def run[F[_]](fetch: K => F[V]): F[V]
+    def run[F[_]: Applicative](fetch: K => F[V]): F[V]
   }
 
   abstract class TaskDescription[K, V] {
@@ -48,5 +71,34 @@ object Build {
         .runS(store)
         .value
     }
+  }
+
+  def sprsh1: TaskDescription[String, Int] = new TaskDescription[String, Int] {
+    def compute(target: String): Option[Task[String, Int]] = {
+      println(s"Computing $target")
+      target match {
+        case "B1" =>
+          Some(new Task[String, Int] {
+            def run[F[_]: Applicative](fetch: String => F[Int]): F[Int] = {
+              (fetch("A1"), fetch("A2")).mapN(_ + _)
+            }
+          })
+        case "B2" =>
+          Some(new Task[String, Int] {
+            def run[F[_]: Applicative](fetch: String => F[Int]): F[Int] = {
+              fetch("B1").map(_ * 2)
+            }
+          })
+        case _ =>
+          None
+      }
+    }
+  }
+
+  def main(args: Array[String]): Unit = {
+    val store = Store.init[Unit, String, Int]((), k => if (k === "A1") 10 else 20)
+    val result = busy[String, Int].build(sprsh1, "B2", store)
+    println("B1: " + result.getValue("B1"))
+    println("B2: " + result.getValue("B2"))
   }
 }
