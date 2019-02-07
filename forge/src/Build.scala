@@ -24,9 +24,9 @@ private[forge] case class MapStore[I, K, V: Hash](info: I, map: Map[K, V]) exten
 object Store {
   def init[I, K: Eq, V: Hash](i: I, f: K => V): Store[I, K, V] = new Store[I, K, V] {
     def getInfo: I = i
-    def putInfo(i: I): Store[I, K, V] = Store.init(i, f)
+    def putInfo(ii: I): Store[I, K, V] = Store.init(ii, f)
     def getValue(k: K): V = f(k)
-    def putValue(k1: K, v: V) = Store.init[I, K, V](i, k2 => if (k1 === k2) v else f(k1))
+    def putValue(k1: K, v: V) = Store.init[I, K, V](i, k2 => if (k1 === k2) v else f(k2))
     def getHash(k: K) = getValue(k).hash
   }
   def initMap[I, K, V: Hash](i: I): Store[I, K, V] =
