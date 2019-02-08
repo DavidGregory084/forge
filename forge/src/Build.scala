@@ -4,7 +4,7 @@ import cats._
 import cats.implicits._
 import cats.mtl._
 import cats.Hash
-import cats.data.State
+import cats.data.{ Const, State }
 
 abstract class Store[I, K, V] {
   def getInfo: I
@@ -74,9 +74,27 @@ object Build {
     }
   }
 
+  def busyM[K, V] = new System[Monad, Unit, K, V] {
+    def build(tasks: TaskDescription[Monad, K, V], target: K, store: Store[Unit, K, V]): Store[Unit, K, V] = {
+      def fetch(k: K): State[Store[Unit, K, V], V] =
+        tasks.compute(k) match {
+          case None =>
+            State.inspect[Store[Unit, K, V], V](_.getValue(k))
+          case Some(task) =>
+            for {
+              v <- task.run(fetch(_))
+              _ <- State.modify[Store[Unit, K, V]](_.putValue(k, v))
+            } yield v
+        }
+
+      fetch(target)
+        .runS(store)
+        .value
+    }
+  }
+
   def sprsh1: TaskDescription[Applicative, String, Int] = new TaskDescription[Applicative, String, Int] {
     def compute(target: String): Option[Task[Applicative, String, Int]] = {
-      println(s"Computing $target")
       target match {
         case "B1" =>
           Some(new Task[Applicative, String, Int] {
@@ -121,13 +139,31 @@ object Build {
     }
   }
 
+  def dependencies[K, V](task: Task[Applicative, K, V]): List[K] =
+    task.run(k => Const[List[K], V](List(k))).getConst
+
   def main(args: Array[String]): Unit = {
-    val store = Store.init[Unit, String, Int]((), k => if (k === "A1") 10 else 20)
-    val result1 = busy[String, Int].build(sprsh1, "B2", store)
+    val store1 = Store.init[Unit, String, Int]((), k => if (k === "A1") 10 else 20)
+
+    val result1 = busy[String, Int].build(sprsh1, "B2", store1)
+
     println("B1: " + result1.getValue("B1"))
     println("B2: " + result1.getValue("B2"))
-    // val result2 = busy[String, Int].build(sprsh2, "B2", store)
-    // println("B1: " + result2.getValue("B1"))
-    // println("B2: " + result2.getValue("B2"))
+
+    val store2 = Store.init[Unit, String, Int]((), _ match {
+      case "A1" => 10
+      case "A2" => 20
+      case "C1" => 1
+      case _ => 20
+    })
+
+    val result2 = busyM[String, Int].build(sprsh2, "B1", store2)
+    println("B1: " + result2.getValue("B1"))
+
+    val result3 = busyM[String, Int].build(sprsh2, "B2", store2)
+    println("B2: " + result3.getValue("B2"))
+
+    println("B1 dependencies: " + dependencies(sprsh1.compute("B1").get).mkString(", "))
+    println("B2 dependencies: " + dependencies(sprsh1.compute("B2").get).mkString(", "))
   }
 }
