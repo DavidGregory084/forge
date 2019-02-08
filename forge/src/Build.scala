@@ -4,7 +4,8 @@ import cats._
 import cats.implicits._
 import cats.mtl._
 import cats.Hash
-import cats.data.{ Const, State }
+import cats.data.{ Const, State, WriterT }
+import quiver._
 
 abstract class Store[I, K, V] {
   def getInfo: I
@@ -34,6 +35,32 @@ object Store {
     MapStore(i, Map.empty[K, V])
 }
 
+final case class Trace[K, R](
+  key: K,
+  dependencies: List[(K, Int)],
+  result: R
+)
+
+final case class VerifyingTrace[K: Eq](traces: Map[K, Trace[K, Int]]) {
+  def recordTrace(trace: Trace[K, Int]): VerifyingTrace[K] =
+    VerifyingTrace(traces.updated(trace.key, trace))
+
+  def isUpToDate[M[_]](key: K, valueHash: Int, fetchHash: K => M[Int])(implicit M: Monad[M]): M[Boolean] = {
+    traces.get(key) match {
+      case None =>
+        M.pure(false)
+      case Some(Trace(storedKey, storedDeps, storedHash)) =>
+        if (storedKey =!= key || storedHash =!= valueHash)
+          M.pure(false)
+        else
+          storedDeps.forallM {
+            case (depKey, depHash) =>
+              fetchHash(depKey).map(_ === depHash)
+          }
+    }
+  }
+}
+
 object Build {
   abstract class Task[C[_[_]], K, V] {
     def run[F[_]: C](fetch: K => F[V]): F[V]
@@ -49,6 +76,63 @@ object Build {
 
   abstract class Rebuilder[C[_[_]], IR, K, V] {
     def rebuild(key: K, currentValue: V, recompute: Task[C, K, V]): Task[MonadState[?[_], IR], K, V]
+  }
+
+  def topoSort[K: Order](
+    graph: Graph[K, Unit, Unit],
+    roots: Vector[K],
+    sortedNodes: Vector[K] = Vector.empty[K]
+  ): Vector[K] = {
+    if (roots.isEmpty)
+      sortedNodes
+    else graph.decomp(roots.head) match {
+      case Decomp(Some(c), g) =>
+        val newRoots = c.successors.filter(g.isRoot)
+        topoSort(g, roots.tail ++ newRoots, sortedNodes :+ roots.head)
+      case Decomp(None, g) =>
+        topoSort(g, roots.tail, sortedNodes)
+    }
+  }
+
+  def topological[I, K: Order, V] = new Scheduler[Applicative, I, I, K, V] {
+    def schedule(rebuilder: Rebuilder[Applicative, I, K, V]): System[Applicative, I, K, V] = {
+      new System[Applicative, I, K, V] {
+        def build(tasks: TaskDescription[Applicative, K, V], target: K, store: Store[I, K, V]) = {
+          def deps(key: K) = tasks.compute(key).map(dependencies).getOrElse(List.empty[K])
+
+          def graph(key: K): Graph[K, Unit, Unit] = {
+            val dependencyKeys = deps(key)
+            val dependencySubgraphs = dependencyKeys.map(graph(_))
+            val directDependencyGraph = empty[K, Unit, Unit]
+              .addNode(LNode(key, ()))
+              .addEdges(dependencyKeys.map(k => LEdge(key, k, ())))
+            dependencySubgraphs.foldLeft(directDependencyGraph)(_ union _)
+          }
+          
+          val dependencyGraph = graph(target)
+
+          val buildQueue = topoSort(dependencyGraph, dependencyGraph.roots.toVector)
+
+          def buildKey(key: K): State[Store[I, K, V], Unit] = tasks.compute(key) match {
+            case None =>
+              State.pure(())
+            case Some(task) =>
+              for {
+                store <- State.get[Store[I, K, V]]
+                value = store.getValue(key)
+                newTask = rebuilder.rebuild(key, value, task)
+                newValue = ???
+                _ <- State.modify[Store[I, K, V]](_.putValue(key, newValue))
+              } yield ()
+          }
+
+          buildQueue
+            .traverse(buildKey)
+            .runS(store)
+            .value
+        }
+      }
+    }
   }
 
   abstract class Scheduler[C[_[_]], I, IR, K, V] {
@@ -142,7 +226,22 @@ object Build {
   def dependencies[K, V](task: Task[Applicative, K, V]): List[K] =
     task.run(k => Const[List[K], V](List(k))).getConst
 
+  def track[M[_]: Monad, K, V](task: Task[Monad, K, V], fetch: K => M[V]): M[(List[(K, V)], V)] = {
+    val trackedFetch = task.run { k =>
+      for {
+        v <- WriterT.liftF[M, List[(K, V)], V](fetch(k))
+        _ <- WriterT.tell[M, List[(K, V)]](List((k, v)))
+      } yield v
+    }
+
+    trackedFetch.run
+  }
+
   def main(args: Array[String]): Unit = {
+    import monix.eval.{ Task => IO }
+    import monix.execution.Scheduler.Implicits.global
+    import scala.concurrent.duration.Duration
+
     val store1 = Store.init[Unit, String, Int]((), k => if (k === "A1") 10 else 20)
 
     val result1 = busy[String, Int].build(sprsh1, "B2", store1)
@@ -165,5 +264,13 @@ object Build {
 
     println("B1 dependencies: " + dependencies(sprsh1.compute("B1").get).mkString(", "))
     println("B2 dependencies: " + dependencies(sprsh1.compute("B2").get).mkString(", "))
+
+    def fetchIO(k: String) = for {
+      _ <- IO.eval { print(k + ": ") }
+      i <- IO.eval { io.StdIn.readLine() }
+    } yield i.toInt
+
+    println(track(sprsh2.compute("B1").get, fetchIO).runSyncUnsafe(Duration.Inf))
+    println(track(sprsh2.compute("B2").get, fetchIO).runSyncUnsafe(Duration.Inf))
   }
 }
